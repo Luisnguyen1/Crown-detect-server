@@ -3,6 +3,22 @@ import os
 from datetime import datetime
 from rpi_crowd_detector import RPiCrowdDetector
 import json
+import numpy as np
+
+def convert_numpy_types(obj):
+    """Convert numpy types to Python native types for JSON serialization"""
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "received_images"
@@ -55,6 +71,9 @@ def upload():
             )
             
             if analysis_result:
+                # Convert numpy types để tránh JSON serialization error
+                analysis_result = convert_numpy_types(analysis_result)
+                
                 # Lưu kết quả JSON
                 json_path = os.path.join(RESULTS_FOLDER, f"result_{filename}.json")
                 with open(json_path, 'w', encoding='utf-8') as f:
@@ -79,7 +98,7 @@ def upload():
         "status": "success", 
         "filename": filename,
         "timestamp": datetime.now().isoformat(),
-        "analysis": analysis_result,
+        "analysis": convert_numpy_types(analysis_result) if analysis_result else None,
         "note": "Original image deleted after processing"
     }
     
@@ -241,4 +260,4 @@ def clear_all_files():
 
 if __name__ == "__main__":
     # ⚠️ Quan trọng: host="0.0.0.0" để cho ESP32 truy cập qua LAN
-    app.run(host="0.0.0.0", port=7860, debug=True)
+    app.run(host="0.0.0.0", port=7861, debug=True)

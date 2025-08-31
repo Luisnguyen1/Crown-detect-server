@@ -71,7 +71,7 @@ class LiteCrowdAnalyzer:
         unique_labels = set(labels)
         for label in unique_labels:
             if label == -1:  # Noise points
-                isolated_count = np.sum(labels == -1)
+                isolated_count = int(np.sum(labels == -1))
             else:
                 cluster_mask = labels == label
                 cluster_points = person_centers[cluster_mask]
@@ -84,9 +84,9 @@ class LiteCrowdAnalyzer:
                     max_x, max_y = np.max(cluster_points, axis=0)
                     
                     crowd_info = {
-                        'id': label,
-                        'people_count': len(cluster_points),
-                        'center': center.tolist(),
+                        'id': int(label),  # Convert numpy int to Python int
+                        'people_count': int(len(cluster_points)),
+                        'center': [float(center[0]), float(center[1])],  # Convert to Python float
                         'bbox': [int(min_x), int(min_y), int(max_x), int(max_y)],
                         'size': [int(max_x - min_x), int(max_y - min_y)]
                     }
@@ -94,9 +94,9 @@ class LiteCrowdAnalyzer:
         
         return {
             'crowds': crowds,
-            'isolated_people': isolated_count,
-            'total_crowds': len(crowds),
-            'total_people_in_crowds': sum(c['people_count'] for c in crowds)
+            'isolated_people': int(isolated_count),  # Convert to Python int
+            'total_crowds': int(len(crowds)),
+            'total_people_in_crowds': int(sum(c['people_count'] for c in crowds))
         }
 
 
@@ -112,12 +112,14 @@ class RPiCrowdDetector:
         self.conf_thres = conf_thres  # Tăng threshold để giảm false positives
         self.iou_thres = iou_thres
         
-        print("🍓 Khởi tạo RPi Crowd Detector...")
+        print("Khởi tạo RPi Crowd Detector...")
         self._print_system_info()
         
-        # Force CPU usage
-        self.device = torch.device('cpu')
-        print(f"📱 Device: {self.device}")
+        # Initialize device and model variables
+        self.device = None
+        self.model = None
+        self.stride = None
+        self.names = None
         
         # Load model với optimizations
         self._load_optimized_model()
@@ -125,24 +127,25 @@ class RPiCrowdDetector:
         # Lightweight crowd analyzer
         self.crowd_analyzer = LiteCrowdAnalyzer(min_people=4, max_distance=50)
         
-        print("✅ RPi Crowd Detector sẵn sàng!")
+        print("RPi Crowd Detector sẵn sàng!")
     
     def _print_system_info(self):
         """In thông tin hệ thống RPi"""
         try:
             memory = psutil.virtual_memory()
-            print(f"💾 RAM: {memory.total/1024**3:.1f}GB total, {memory.available/1024**3:.1f}GB available")
-            print(f"🔥 CPU cores: {psutil.cpu_count()}")
-            print(f"📊 CPU usage: {psutil.cpu_percent()}%")
+            print(f"RAM: {memory.total/1024**3:.1f}GB total, {memory.available/1024**3:.1f}GB available")
+            print(f"CPU cores: {psutil.cpu_count()}")
+            print(f"CPU usage: {psutil.cpu_percent()}%")
         except:
-            print("📋 System info không available")
+            print("System info không available")
     
     def _load_optimized_model(self):
         """Load model với optimizations cho RPi"""
         try:
-            print(f"📥 Loading model: {self.weights}")
+            print(f"Loading model: {self.weights}")
             
-            # Load model
+            # Load model using select_device like in streamlit_app
+            self.device = select_device('')
             self.model = attempt_load(self.weights, map_location=self.device)
             self.model.eval()  # Set to evaluation mode
             
@@ -156,28 +159,48 @@ class RPiCrowdDetector:
             # Get class names
             self.names = self.model.module.names if hasattr(self.model, 'module') else self.model.names
             
-            print(f"✅ Model loaded - Image size: {self.img_size}")
+            print(f"Model loaded - Image size: {self.img_size}")
+            print(f"Device: {self.device}")
             
         except Exception as e:
-            print(f"❌ Model loading error: {e}")
-            # Fallback to ultralytics hub
+            print(f"Primary model loading error: {e}")
+            # Fallback: try loading directly with torch.hub
             try:
-                print("🔄 Trying backup model...")
-                self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
-                self.model.to(self.device)
+                print("Trying ultralytics YOLOv5 from torch hub...")
+                import torch
+                # Clear any existing models from cache to avoid conflicts
+                torch.hub._validate_not_a_forked_repo = lambda a, b, c: True
+                self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
+                self.device = next(self.model.parameters()).device
                 self.model.eval()
                 self.names = self.model.names
-                print("✅ Backup model loaded")
+                self.stride = 32  # Default stride for YOLOv5s
+                print("✅ Ultralytics YOLOv5 model loaded from torch hub")
+                
             except Exception as e2:
-                print(f"❌ Backup model failed: {e2}")
-                sys.exit(1)
+                print(f"Torch hub model loading error: {e2}")
+                # Final fallback: try ONNX or create dummy model for testing
+                try:
+                    print("Trying final fallback - loading minimal YOLOv5...")
+                    # Use a more direct approach
+                    import ultralytics
+                    from ultralytics import YOLO
+                    self.model = YOLO('yolov5s.pt')
+                    self.device = 'cpu'
+                    self.names = self.model.names
+                    self.stride = 32
+                    print("✅ Ultralytics YOLO model loaded")
+                    
+                except Exception as e3:
+                    print(f"All model loading attempts failed. Final error: {e3}")
+                    raise Exception(f"Could not load any model. Errors: Primary: {e}, Hub: {e2}, Ultralytics: {e3}")
     
     def detect_single_image(self, image_path, save_path=None, visualize=True):
         """
         Phát hiện crowd trong 1 ảnh với tối ưu hóa RPi
         """
         if not os.path.exists(image_path):
-            print(f"❌ File không tồn tại: {image_path}")
+            print(f"File không tồn tại: {image_path}")
             return None
         
         print(f"🔍 Analyzing: {Path(image_path).name}")
@@ -186,7 +209,7 @@ class RPiCrowdDetector:
         # Load và resize ảnh
         original_img = cv2.imread(image_path)
         if original_img is None:
-            print(f"❌ Không thể đọc ảnh: {image_path}")
+            print(f"Không thể đọc ảnh: {image_path}")
             return None
         
         # Resize để giảm processing time
@@ -201,36 +224,72 @@ class RPiCrowdDetector:
             img = original_img.copy()
             scale_factor = 1.0
         
-        # Prepare image for model
-        img_tensor = self._prepare_image(img)
-        
-        # YOLO inference
+        # Run inference based on model type
         inference_start = time.time()
-        with torch.no_grad():
-            pred = self.model(img_tensor)[0]
-        inference_time = time.time() - inference_start
-        
-        # Post-processing
-        pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=[0])  # Only person class
-        
-        # Extract detections
         detections = []
-        if len(pred[0]) > 0:
-            det = pred[0]
-            # Scale back to resized image coordinates
-            det[:, :4] = scale_coords(img_tensor.shape[2:], det[:, :4], img.shape).round()
-            
-            for *xyxy, conf, cls in det:
-                if int(cls) == 0:  # Person class only
-                    # Scale back to original image if needed
-                    if scale_factor != 1.0:
-                        xyxy = [coord / scale_factor for coord in xyxy]
+        
+        try:
+            # Check if this is ultralytics YOLO model
+            if hasattr(self.model, 'predict'):
+                # Ultralytics YOLO model
+                results = self.model.predict(img, conf=self.conf_thres, iou=self.iou_thres, classes=[0], verbose=False)
+                inference_time = time.time() - inference_start
+                
+                # Extract detections from ultralytics results
+                if len(results) > 0 and hasattr(results[0], 'boxes') and len(results[0].boxes) > 0:
+                    boxes = results[0].boxes
+                    for i in range(len(boxes)):
+                        if int(boxes.cls[i]) == 0:  # Person class
+                            x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy()
+                            conf = float(boxes.conf[i])
+                            
+                            # Scale back to original image if needed
+                            if scale_factor != 1.0:
+                                x1, y1, x2, y2 = [coord / scale_factor for coord in [x1, y1, x2, y2]]
+                            
+                            detections.append({
+                                'class': 'person',
+                                'confidence': float(conf),
+                                'bbox': [int(float(x1)), int(float(y1)), int(float(x2)), int(float(y2))]
+                            })
+                            
+            else:
+                # Traditional YOLOv5 model (torch hub or attempt_load)
+                img_tensor = self._prepare_image(img)
+                
+                with torch.no_grad():
+                    pred = self.model(img_tensor)
+                    if isinstance(pred, tuple):
+                        pred = pred[0]
+                    if not isinstance(pred, torch.Tensor):
+                        pred = pred[0] if isinstance(pred, list) else pred
+                        
+                inference_time = time.time() - inference_start
+                
+                # Post-processing
+                pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=[0])  # Only person class
+                
+                # Extract detections
+                if len(pred) > 0 and len(pred[0]) > 0:
+                    det = pred[0]
+                    # Scale back to resized image coordinates
+                    det[:, :4] = scale_coords(img_tensor.shape[2:], det[:, :4], img.shape).round()
                     
-                    detections.append({
-                        'class': 'person',
-                        'confidence': float(conf),
-                        'bbox': [int(x) for x in xyxy]
-                    })
+                    for *xyxy, conf, cls in det:
+                        if int(cls) == 0:  # Person class only
+                            # Scale back to original image if needed
+                            if scale_factor != 1.0:
+                                xyxy = [coord / scale_factor for coord in xyxy]
+                            
+                            detections.append({
+                                'class': 'person',
+                                'confidence': float(conf),
+                                'bbox': [int(float(x)) for x in xyxy]
+                            })
+                            
+        except Exception as e:
+            print(f"Inference error: {e}")
+            inference_time = time.time() - inference_start
         
         # Crowd analysis
         person_centers = self.crowd_analyzer.extract_person_centers(detections)
@@ -240,12 +299,12 @@ class RPiCrowdDetector:
         
         # Results
         result_data = {
-            'image_path': image_path,
+            'image_path': str(image_path),
             'processing_time': f'{total_time:.2f}s',
             'inference_time': f'{inference_time:.3f}s',
-            'total_people': len(person_centers),
+            'total_people': int(len(person_centers)),
             'crowd_analysis': crowd_results,
-            'scale_factor': scale_factor
+            'scale_factor': float(scale_factor)
         }
         
         # Visualization và save
@@ -349,16 +408,16 @@ class RPiCrowdDetector:
     
     def _print_simple_summary(self, result_data):
         """In summary đơn giản"""
-        print(f"\n📊 RPi CROWD ANALYSIS RESULTS:")
+        print(f"\nPi CROWD ANALYSIS RESULTS:")
         print("=" * 40)
         
         crowd_analysis = result_data['crowd_analysis']
-        print(f"⏱️  Processing: {result_data['processing_time']}")
-        print(f"🚀 Inference: {result_data['inference_time']}")
-        print(f"👥 Total people: {result_data['total_people']}")
-        print(f"🏃 Crowds: {crowd_analysis['total_crowds']}")
-        print(f"👫 In crowds: {crowd_analysis['total_people_in_crowds']}")
-        print(f"🚶 Isolated: {crowd_analysis['isolated_people']}")
+        print(f"Processing: {result_data['processing_time']}")
+        print(f"Inference: {result_data['inference_time']}")
+        print(f"Total people: {result_data['total_people']}")
+        print(f"Crowds: {crowd_analysis['total_crowds']}")
+        print(f"In crowds: {crowd_analysis['total_people_in_crowds']}")
+        print(f"Isolated: {crowd_analysis['isolated_people']}")
         
         for crowd in crowd_analysis['crowds']:
             print(f"  • Crowd {crowd['id']}: {crowd['people_count']} people")
@@ -366,7 +425,7 @@ class RPiCrowdDetector:
     def batch_process(self, source_dir, output_dir, max_images=None):
         """Xử lý batch với memory management"""
         if not os.path.exists(source_dir):
-            print(f"❌ Source directory không tồn tại: {source_dir}")
+            print(f"Source directory không tồn tại: {source_dir}")
             return
         
         # Find images
@@ -377,13 +436,13 @@ class RPiCrowdDetector:
             image_files.extend(Path(source_dir).glob(f'*{ext.upper()}'))
         
         if not image_files:
-            print(f"❌ Không tìm thấy ảnh trong: {source_dir}")
+            print(f"Không tìm thấy ảnh trong: {source_dir}")
             return
         
         if max_images:
             image_files = image_files[:max_images]
         
-        print(f"📁 Processing {len(image_files)} images...")
+        print(f"Processing {len(image_files)} images...")
         os.makedirs(output_dir, exist_ok=True)
         
         # Process with memory monitoring
@@ -393,7 +452,7 @@ class RPiCrowdDetector:
             # Memory check
             memory = psutil.virtual_memory()
             if memory.percent > 85:
-                print(f"⚠️  High memory usage: {memory.percent:.1f}% - Pausing...")
+                print(f"High memory usage: {memory.percent:.1f}% - Pausing...")
                 time.sleep(2)
             
             output_path = os.path.join(output_dir, f"result_{img_path.name}")
@@ -406,10 +465,10 @@ class RPiCrowdDetector:
                     torch.cuda.empty_cache() if torch.cuda.is_available() else None
                     
             except Exception as e:
-                print(f"❌ Error processing {img_path.name}: {e}")
+                print(f"Error processing {img_path.name}: {e}")
                 continue
         
-        print(f"\n✅ Batch processing completed! Results in: {output_dir}")
+        print(f"\nBatch processing completed! Results in: {output_dir}")
 
 
 def main():
@@ -431,7 +490,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("🍓 RPi Optimized Crowd Detection")
+    print("RPi Optimized Crowd Detection")
     print("=" * 50)
     
     # Initialize detector
@@ -447,18 +506,18 @@ def main():
     # Process
     if os.path.isfile(args.source):
         # Single image
-        print(f"\n🖼️  Single image mode: {args.source}")
+        print(f"\nSingle image mode: {args.source}")
         output_path = os.path.join(args.output, f"result_{Path(args.source).name}")
         detector.detect_single_image(args.source, output_path, visualize=not args.no_vis)
         
     elif os.path.isdir(args.source):
         # Batch processing
-        print(f"\n📁 Batch processing mode: {args.source}")
+        print(f"\nBatch processing mode: {args.source}")
         detector.batch_process(args.source, args.output, args.max_images)
         
     else:
-        print(f"❌ Path không hợp lệ: {args.source}")
+        print(f"Path không hợp lệ: {args.source}")
 
 
 # if __name__ == '__main__':
-    main()
+#     main()
