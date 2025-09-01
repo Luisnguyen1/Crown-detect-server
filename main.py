@@ -4,6 +4,8 @@ from datetime import datetime
 from rpi_crowd_detector import RPiCrowdDetector
 import json
 import numpy as np
+import requests
+import threading
 
 def convert_numpy_types(obj):
     """Convert numpy types to Python native types for JSON serialization"""
@@ -19,6 +21,147 @@ def convert_numpy_types(obj):
         return obj.tolist()
     else:
         return obj
+
+# Cấu hình server quản lý
+MANAGEMENT_SERVER_URL = "http://localhost:8080"  # Có thể thay đổi theo môi trường
+CAMERA_ID = "cam_001"  # ID camera mặc định
+
+# Map camera_id với position trên map 20x20 và thông tin khu vực
+CAMERA_POSITION_MAP = {
+    "cam_001": {
+        "position": [2, 3],      # Entrance area
+        "area_name": "Main Entrance",
+        "zone_size": [4, 3]      # Default zone size for this camera
+    },
+    "cam_002": {
+        "position": [8, 5],      # Electronics section
+        "area_name": "Electronics Section", 
+        "zone_size": [3, 4]
+    },
+    "cam_003": {
+        "position": [15, 8],     # Gaming area
+        "area_name": "Gaming Zone",
+        "zone_size": [3, 3]
+    },
+    "cam_004": {
+        "position": [12, 15],    # Food court
+        "area_name": "Food Court",
+        "zone_size": [5, 3]
+    },
+    "cam_005": {
+        "position": [5, 12],     # Accessories section
+        "area_name": "Accessories",
+        "zone_size": [4, 4]
+    },
+    "cam_006": {
+        "position": [18, 3],     # Checkout area
+        "area_name": "Checkout Area",
+        "zone_size": [2, 5]
+    }
+}
+
+def send_crowd_update(analysis_result, camera_id=CAMERA_ID):
+    """
+    Gửi thông tin cập nhật đám đông về server quản lý
+    Chạy trong thread riêng để không chặn luồng chính
+    """
+    try:
+        if not analysis_result or "crowd_analysis" not in analysis_result:
+            return
+        
+        crowd_data = analysis_result["crowd_analysis"]
+        areas = []
+        
+        # Lấy thông tin position từ camera map
+        camera_info = CAMERA_POSITION_MAP.get(camera_id, {
+            "position": [10, 10],     # Default center position
+            "area_name": "Unknown Area",
+            "zone_size": [3, 3]       # Default zone size
+        })
+        
+        base_position = camera_info["position"]
+        area_name = camera_info["area_name"]
+        default_zone_size = camera_info["zone_size"]
+        
+        # Xử lý từng cluster crowd thành area
+        for i, crowd in enumerate(crowd_data.get("crowds", [])):
+            area_id = f"zone_{camera_id}_{i+1}"
+            
+            # Tính toán offset position từ bbox (relative to camera base position)
+            bbox = crowd.get("bbox", [0, 0, 100, 100])  # [x1, y1, x2, y2]
+            
+            # Calculate relative offset from center of image
+            img_center_x = 320  # Assume 640px width / 2
+            img_center_y = 240  # Assume 480px height / 2
+            crowd_center_x = (bbox[0] + bbox[2]) / 2
+            crowd_center_y = (bbox[1] + bbox[3]) / 2
+            
+            # Convert pixel offset to map offset (max ±2 cells from base position)
+            offset_x = int((crowd_center_x - img_center_x) / img_center_x * 2)
+            offset_y = int((crowd_center_y - img_center_y) / img_center_y * 2)
+            
+            # Final position = base position + offset
+            final_x = max(0, min(19, base_position[0] + offset_x))
+            final_y = max(0, min(19, base_position[1] + offset_y))
+            
+            # Tính size từ bbox hoặc dùng default
+            bbox_width = bbox[2] - bbox[0]
+            bbox_height = bbox[3] - bbox[1]
+            
+            # Scale bbox size to map size (proportional to image size)
+            size_scale_x = max(1, int(bbox_width / 640 * default_zone_size[0]))
+            size_scale_y = max(1, int(bbox_height / 480 * default_zone_size[1]))
+            
+            # Tính crowd level từ số người
+            people_count = crowd.get("people_count", 0)
+            if people_count == 0:
+                crowd_level = 0
+            elif people_count <= 2:
+                crowd_level = 1
+            elif people_count <= 5:
+                crowd_level = 2
+            elif people_count <= 10:
+                crowd_level = 3
+            elif people_count <= 15:
+                crowd_level = 4
+            else:
+                crowd_level = 5
+            
+            area = {
+                "area_id": area_id,
+                "position": [final_x, final_y],
+                "size": [size_scale_x, size_scale_y],
+                "crowd_level": crowd_level,
+                "people_count": people_count,
+                "confidence": crowd.get("confidence", 0.0),
+                "description": f"{area_name} - Crowd {i+1} ({people_count} people)",
+                "camera_id": camera_id
+            }
+            areas.append(area)
+        
+        # Gửi batch update nếu có areas
+        if areas:
+            payload = {"areas": areas}
+            
+            response = requests.post(
+                f"{MANAGEMENT_SERVER_URL}/api/crowd/update",
+                json=payload,
+                timeout=5,  # Timeout 5s để không chặn lâu
+                headers={"Content-Type": "application/json"}
+            )
+            
+            if response.status_code == 200:
+                print(f"✅ Sent crowd update: {len(areas)} areas from {camera_id} ({area_name}) to management server")
+            else:
+                print(f"⚠️ Management server response: {response.status_code}")
+                
+        else:
+            print(f"ℹ️ No crowd areas detected from {camera_id} ({area_name})")
+            
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Could not reach management server: {e}")
+    except Exception as e:
+        print(f"❌ Error sending crowd update: {e}")
 
 app = Flask(__name__)
 UPLOAD_FOLDER = "received_images"
@@ -61,12 +204,21 @@ def upload():
     if image.filename == '':
         return {"status": "error", "message": "No file selected"}, 400
 
-    # Lưu ảnh
-    filename = datetime.now().strftime("%Y%m%d_%H%M%S") + ".jpg"
+    # Lấy camera_id từ form data (ESP32 gửi lên)
+    camera_id = request.form.get('camera_id', CAMERA_ID)  # Default fallback
+    print(f"📹 Camera ID from ESP32: {camera_id}")
+    
+    # Validate camera_id
+    if camera_id not in CAMERA_POSITION_MAP:
+        print(f"⚠️ Unknown camera_id: {camera_id}, using default mapping")
+        # Vẫn cho phép xử lý nhưng dùng default position
+
+    # Lưu ảnh với camera_id trong tên file
+    filename = f"{camera_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
     image_path = os.path.join(UPLOAD_FOLDER, filename)
     image.save(image_path)
 
-    print(f"✅ Received image: {image_path}")
+    print(f"✅ Received image from {camera_id}: {image_path}")
     
     # Chạy AI phân tích đám đông
     analysis_result = None
@@ -86,12 +238,26 @@ def upload():
                 # Convert numpy types để tránh JSON serialization error
                 analysis_result = convert_numpy_types(analysis_result)
                 
+                # Thêm camera info vào kết quả
+                analysis_result["camera_id"] = camera_id
+                analysis_result["camera_info"] = CAMERA_POSITION_MAP.get(camera_id, {
+                    "area_name": "Unknown Area",
+                    "position": [10, 10]
+                })
+                
                 # Lưu kết quả JSON
                 json_path = os.path.join(RESULTS_FOLDER, f"result_{filename}.json")
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(analysis_result, f, indent=2, ensure_ascii=False)
                 
                 print(f"💾 Analysis saved: {json_path}")
+                
+                # 🚀 Gửi thông tin về server quản lý (chạy trong thread riêng)
+                threading.Thread(
+                    target=send_crowd_update, 
+                    args=(analysis_result, camera_id),
+                    daemon=True
+                ).start()
                 
         except Exception as e:
             print(f"❌ AI Analysis error: {e}")
@@ -109,6 +275,7 @@ def upload():
     response_data = {
         "status": "success", 
         "filename": filename,
+        "camera_id": camera_id,
         "timestamp": datetime.now().isoformat(),
         "analysis": convert_numpy_types(analysis_result) if analysis_result else None,
         "note": "Original image deleted after processing"
@@ -117,11 +284,13 @@ def upload():
     # In summary nếu có kết quả
     if analysis_result and "crowd_analysis" in analysis_result:
         crowd_data = analysis_result["crowd_analysis"]
-        print(f"📊 CROWD ANALYSIS SUMMARY:")
+        camera_area = CAMERA_POSITION_MAP.get(camera_id, {}).get("area_name", "Unknown")
+        print(f"📊 CROWD ANALYSIS SUMMARY [{camera_id} - {camera_area}]:")
         print(f"   👥 Total people: {analysis_result.get('total_people', 0)}")
         print(f"   🏃 Crowds detected: {crowd_data.get('total_crowds', 0)}")
         print(f"   👫 People in crowds: {crowd_data.get('total_people_in_crowds', 0)}")
         print(f"   🚶 Isolated people: {crowd_data.get('isolated_people', 0)}")
+        print(f"   📍 Camera position: {CAMERA_POSITION_MAP.get(camera_id, {}).get('position', 'Unknown')}")
     
     return jsonify(response_data), 200
 
@@ -237,6 +406,86 @@ def cleanup_old_files():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
+@app.route('/cameras', methods=['GET', 'POST'])
+def manage_cameras():
+    """Quản lý mapping camera với position"""
+    global CAMERA_POSITION_MAP
+    
+    if request.method == 'GET':
+        return jsonify({
+            "status": "success",
+            "cameras": CAMERA_POSITION_MAP
+        }), 200
+    
+    elif request.method == 'POST':
+        try:
+            data = request.get_json()
+            
+            if 'cameras' in data:
+                # Cập nhật toàn bộ mapping
+                CAMERA_POSITION_MAP.update(data['cameras'])
+                print(f"🔧 Updated camera mapping: {len(data['cameras'])} cameras")
+                
+            elif 'camera_id' in data:
+                # Cập nhật một camera cụ thể
+                camera_id = data['camera_id']
+                camera_info = {
+                    "position": data.get('position', [10, 10]),
+                    "area_name": data.get('area_name', 'New Area'),
+                    "zone_size": data.get('zone_size', [3, 3])
+                }
+                CAMERA_POSITION_MAP[camera_id] = camera_info
+                print(f"🔧 Updated camera {camera_id}: {camera_info}")
+            
+            return jsonify({
+                "status": "success",
+                "message": "Camera mapping updated",
+                "cameras": CAMERA_POSITION_MAP
+            }), 200
+            
+        except Exception as e:
+            return {"status": "error", "message": str(e)}, 500
+
+@app.route('/config', methods=['GET', 'POST'])
+def manage_config():
+    """Quản lý cấu hình server"""
+    global MANAGEMENT_SERVER_URL, CAMERA_ID
+    
+    if request.method == 'GET':
+        return jsonify({
+            "status": "success",
+            "config": {
+                "management_server_url": MANAGEMENT_SERVER_URL,
+                "camera_id": CAMERA_ID,
+                "total_cameras_mapped": len(CAMERA_POSITION_MAP)
+            }
+        }), 200
+    
+    elif request.method == 'POST':
+        try:
+            config = request.get_json()
+            
+            if 'management_server_url' in config:
+                MANAGEMENT_SERVER_URL = config['management_server_url']
+                print(f"🔧 Updated management server URL: {MANAGEMENT_SERVER_URL}")
+            
+            if 'camera_id' in config:
+                CAMERA_ID = config['camera_id']
+                print(f"🔧 Updated camera ID: {CAMERA_ID}")
+            
+            return jsonify({
+                "status": "success",
+                "message": "Configuration updated",
+                "config": {
+                    "management_server_url": MANAGEMENT_SERVER_URL,
+                    "camera_id": CAMERA_ID,
+                    "total_cameras_mapped": len(CAMERA_POSITION_MAP)
+                }
+            }), 200
+            
+        except Exception as e:
+            return {"status": "error", "message": str(e)}, 500
+
 @app.route('/clear_all', methods=['POST'])
 def clear_all_files():
     """Xóa tất cả file (chỉ dùng khi cần thiết)"""
@@ -271,5 +520,20 @@ def clear_all_files():
         return {"status": "error", "message": str(e)}, 500
 
 if __name__ == "__main__":
+    print("\n" + "="*50)
+    print("🚀 CROWD DETECTION SERVER STARTING")
+    print("="*50)
+    print(f"📡 Management Server: {MANAGEMENT_SERVER_URL}")
+    print(f"📹 Default Camera ID: {CAMERA_ID}")
+    print(f"🗺️  Camera Mapping: {len(CAMERA_POSITION_MAP)} cameras configured")
+    print(f"🌐 Server will run on: http://0.0.0.0:7863")
+    print("="*50)
+    
+    # In ra camera mapping
+    print("📹 CAMERA POSITION MAPPING:")
+    for cam_id, info in CAMERA_POSITION_MAP.items():
+        print(f"   {cam_id}: {info['area_name']} at {info['position']}")
+    print("="*50 + "\n")
+    
     # ⚠️ Quan trọng: host="0.0.0.0" để cho ESP32 truy cập qua LAN
     app.run(host="0.0.0.0", port=7863, debug=True)
