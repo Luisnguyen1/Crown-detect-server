@@ -26,18 +26,30 @@ RESULTS_FOLDER = "analysis_results"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
-# Khởi tạo AI detector
+# Khởi tạo AI detector - OPTIMIZED cho RPi4
 print("🤖 Đang khởi tạo AI Crowd Detector...")
 try:
+    # Option 1: Sử dụng local downloaded model (fastest)
     ai_detector = RPiCrowdDetector(
-        weights='yolov5s.pt',
-        img_size=320,
-        conf_thres=0.3
+        weights='models_rpi/yolov5n.pt',  # Local optimized model
+        img_size=416,                     # Balanced size for RPi4
+        conf_thres=0.25                   # Lower threshold for better detection
     )
     print("✅ AI Detector sẵn sàng!")
 except Exception as e:
-    print(f"❌ Lỗi khởi tạo AI Detector: {e}")
-    ai_detector = None
+    print(f"❌ Lỗi với local model: {e}")
+    print("🔄 Thử với model mặc định...")
+    try:
+        # Fallback: Default model
+        ai_detector = RPiCrowdDetector(
+            weights='yolov5n.pt',         # Default model
+            img_size=416,
+            conf_thres=0.25
+        )
+        print("✅ AI Detector (default) sẵn sàng!")
+    except Exception as e2:
+        print(f"❌ Lỗi khởi tạo fallback detector: {e2}")
+        ai_detector = None
 
 @app.route('/upload', methods=['POST'])
 def upload():
@@ -260,4 +272,4 @@ def clear_all_files():
 
 if __name__ == "__main__":
     # ⚠️ Quan trọng: host="0.0.0.0" để cho ESP32 truy cập qua LAN
-    app.run(host="0.0.0.0", port=7861, debug=True)
+    app.run(host="0.0.0.0", port=7863, debug=True)

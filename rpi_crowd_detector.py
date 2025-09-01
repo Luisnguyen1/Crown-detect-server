@@ -144,56 +144,48 @@ class RPiCrowdDetector:
         try:
             print(f"Loading model: {self.weights}")
             
-            # Load model using select_device like in streamlit_app
-            self.device = select_device('')
-            self.model = attempt_load(self.weights, map_location=self.device)
-            self.model.eval()  # Set to evaluation mode
-            
-            # Don't use half precision on CPU for compatibility
-            # self.model.half()  # Commented out for CPU compatibility
-            
-            # Get stride và resize
-            self.stride = int(self.model.stride.max())
-            self.img_size = check_img_size(self.img_size, s=self.stride)
-            
-            # Get class names
-            self.names = self.model.module.names if hasattr(self.model, 'module') else self.model.names
-            
-            print(f"Model loaded - Image size: {self.img_size}")
-            print(f"Device: {self.device}")
+            # Skip legacy attempt_load, go straight to ultralytics
+            raise Exception("Bypassing legacy model loading for RPi optimization")
             
         except Exception as e:
             print(f"Primary model loading error: {e}")
-            # Fallback: try loading directly with torch.hub
+            # Direct ultralytics loading for RPi4 optimization
             try:
-                print("Trying ultralytics YOLOv5 from torch hub...")
-                import torch
-                # Clear any existing models from cache to avoid conflicts
-                torch.hub._validate_not_a_forked_repo = lambda a, b, c: True
-                self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
-                self.device = next(self.model.parameters()).device
-                self.model.eval()
+                print("Trying final fallback - loading minimal YOLOv5...")
+                import ultralytics
+                from ultralytics import YOLO
+                
+                # Use object detection model, not classification
+                if 'cls' in self.weights or 'classify' in self.weights:
+                    # If accidentally using classification model, switch to detection
+                    self.weights = self.weights.replace('-cls', '').replace('cls', '')
+                    if not self.weights.endswith('.pt'):
+                        self.weights += '.pt'
+                    print(f"🔄 Switched to detection model: {self.weights}")
+                
+                self.model = YOLO(self.weights)
+                self.device = 'cpu'  # Force CPU for RPi4
                 self.names = self.model.names
-                self.stride = 32  # Default stride for YOLOv5s
-                print("✅ Ultralytics YOLOv5 model loaded from torch hub")
+                self.stride = 32
+                print("✅ Ultralytics YOLO model loaded")
                 
             except Exception as e2:
-                print(f"Torch hub model loading error: {e2}")
-                # Final fallback: try ONNX or create dummy model for testing
+                print(f"Ultralytics model loading error: {e2}")
+                # Final fallback: try torch hub with correct detection model
                 try:
-                    print("Trying final fallback - loading minimal YOLOv5...")
-                    # Use a more direct approach
-                    import ultralytics
-                    from ultralytics import YOLO
-                    self.model = YOLO('yolov5s.pt')
+                    print("Trying torch hub with detection model...")
+                    import torch
+                    torch.hub._validate_not_a_forked_repo = lambda a, b, c: True
+                    self.model = torch.hub.load('ultralytics/yolov5', 'yolov5n', pretrained=True, trust_repo=True)
                     self.device = 'cpu'
+                    self.model.eval()
                     self.names = self.model.names
                     self.stride = 32
-                    print("✅ Ultralytics YOLO model loaded")
+                    print("✅ Torch hub YOLOv5 detection model loaded")
                     
                 except Exception as e3:
                     print(f"All model loading attempts failed. Final error: {e3}")
-                    raise Exception(f"Could not load any model. Errors: Primary: {e}, Hub: {e2}, Ultralytics: {e3}")
+                    raise Exception(f"Could not load any model. Errors: Primary: {e}, Ultralytics: {e2}, Hub: {e3}")
     
     def detect_single_image(self, image_path, save_path=None, visualize=True):
         """
