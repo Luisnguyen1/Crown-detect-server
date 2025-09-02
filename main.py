@@ -23,7 +23,7 @@ def convert_numpy_types(obj):
         return obj
 
 # Cấu hình server quản lý
-MANAGEMENT_SERVER_URL = "http://localhost:8080"  # Có thể thay đổi theo môi trường
+MANAGEMENT_SERVER_URL = "http://192.168.1.86:8080"  # Có thể thay đổi theo môi trường
 CAMERA_ID = "cam_001"  # ID camera mặc định
 
 # Map camera_id với position trên map 20x20 và thông tin khu vực
