@@ -11,7 +11,7 @@ def test_api():
     print("🧪 Testing Crowd Detection API...")
     
     # Test endpoint
-    url = "http://192.168.100.22:7863/upload"
+    url = "http://192.168.1.187:7863/upload"
     
     try:
         # Test với test image

@@ -29,34 +29,64 @@ CAMERA_ID = "cam_001"  # ID camera mặc định
 # Map camera_id với position trên map 20x20 và thông tin khu vực
 CAMERA_POSITION_MAP = {
     "cam_001": {
-        "position": [2, 3],      # Entrance area
+        "position": [1, 0],      # Main entrance
         "area_name": "Main Entrance",
-        "zone_size": [4, 3]      # Default zone size for this camera
+        "zone_size": [3, 2]      # Monitor entrance area
     },
     "cam_002": {
-        "position": [8, 5],      # Electronics section
-        "area_name": "Electronics Section", 
-        "zone_size": [3, 4]
+        "position": [18, 0],     # Secondary entrance/exit
+        "area_name": "Secondary Exit",
+        "zone_size": [3, 2]
     },
     "cam_003": {
-        "position": [15, 8],     # Gaming area
-        "area_name": "Gaming Zone",
-        "zone_size": [3, 3]
+        "position": [0, 2],      # Dãy 1 - Walking path near Cụm A
+        "area_name": "Row 1 - Cluster A Area",
+        "zone_size": [4, 3]
     },
     "cam_004": {
-        "position": [12, 15],    # Food court
-        "area_name": "Food Court",
-        "zone_size": [5, 3]
+        "position": [8, 2],      # Dãy 1 - Center corridor
+        "area_name": "Row 1 - Center Corridor",
+        "zone_size": [3, 3]
     },
     "cam_005": {
-        "position": [5, 12],     # Accessories section
-        "area_name": "Accessories",
-        "zone_size": [4, 4]
+        "position": [19, 6],     # Dãy 1 - Walking path near Cụm B
+        "area_name": "Row 1 - Cluster B Area",
+        "zone_size": [4, 3]
     },
     "cam_006": {
-        "position": [18, 3],     # Checkout area
-        "area_name": "Checkout Area",
-        "zone_size": [2, 5]
+        "position": [0, 6],      # Dãy 2 - Walking path near Cụm C
+        "area_name": "Row 2 - Cluster C Area",
+        "zone_size": [4, 3]
+    },
+    "cam_007": {
+        "position": [8, 6],      # Dãy 2 - Center corridor
+        "area_name": "Row 2 - Center Corridor",
+        "zone_size": [3, 3]
+    },
+    "cam_008": {
+        "position": [19, 10],    # Dãy 2 - Walking path near Cụm D
+        "area_name": "Row 2 - Cluster D Area",
+        "zone_size": [4, 3]
+    },
+    "cam_009": {
+        "position": [0, 10],     # Dãy 3 - Walking path near Cụm E
+        "area_name": "Row 3 - Cluster E Area",
+        "zone_size": [4, 3]
+    },
+    "cam_010": {
+        "position": [8, 10],     # Dãy 3 - Center corridor
+        "area_name": "Row 3 - Center Corridor",
+        "zone_size": [3, 3]
+    },
+    "cam_011": {
+        "position": [19, 13],    # Dãy 3 - Walking path near Cụm F
+        "area_name": "Row 3 - Cluster F Area",
+        "zone_size": [4, 3]
+    },
+    "cam_012": {
+        "position": [9, 15],     # Main walking area
+        "area_name": "Central Walking Area",
+        "zone_size": [6, 4]
     }
 }
 
